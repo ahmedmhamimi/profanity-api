@@ -12,66 +12,64 @@ def get_custom_wordset(blacklist=None, whitelist=None):
         current_set.difference_update(set([w.lower() for w in whitelist]))
     return current_set
 
-def check_logic(text, custom_set):
+def is_word_dirty(word, custom_set):
     """
-    Checks if a string matches the library OR the custom set
+    Checks a single word against the set using two methods:
+    1. Direct match (Fast)
+    2. Normalized match (remove dots/symbols)
     """
-    # 1. Library check (fast)
-    if profanity.contains_profanity(text):
-        return True
+    word_lower = word.lower()
     
-    # 2. Custom set check (manual)
-    if custom_set != DEFAULT_PROFANITY_SET:
-        # Check exact word
-        if text.lower() in custom_set:
-            return True
+    # Check 1: Exact match
+    if word_lower in custom_set:
+        return True
+        
+    # Check 2: Evasion match (s.h.i.t -> shit)
+    # Remove anything that isn't a letter or number
+    clean = re.sub(r'[^\w]', '', word_lower)
+    if clean in custom_set:
+        return True
+        
+    # Check 3: Library Check (catches l33t speak like h3ll0)
+    # We only check this if the user didn't modify the set, for performance
+    if custom_set == DEFAULT_PROFANITY_SET:
+        return profanity.contains_profanity(word)
+        
     return False
 
 def analyze_text(text, custom_set):
-    # 1. Check raw
-    if check_logic(text, custom_set):
+    # 1. Check raw text using library (handles sentences well)
+    profanity.load_censor_words(custom_set)
+    if profanity.contains_profanity(text):
+        profanity.load_censor_words(DEFAULT_PROFANITY_SET)
         return True
-    # 2. Check normalized (evasion detection)
-    normalized = re.sub(r'[^\w]', '', text)
-    if check_logic(normalized, custom_set):
+    profanity.load_censor_words(DEFAULT_PROFANITY_SET)
+
+    # 2. Check Evasion Text (Fix: Keep Spaces!)
+    # "This is s.h.i.t" -> "This is shit"
+    normalized_text = re.sub(r'[^\w\s]', '', text)
+    
+    profanity.load_censor_words(custom_set)
+    if profanity.contains_profanity(normalized_text):
+        profanity.load_censor_words(DEFAULT_PROFANITY_SET)
         return True
+    profanity.load_censor_words(DEFAULT_PROFANITY_SET)
+        
     return False
 
 def censor_text(text, censor_char, custom_set):
     """
-    Smart Censor: Handles both standard profanity AND evasion attempts.
+    Smart Censor: Tokenizes text to catch evasion word-by-word.
     """
-    # 1. Run the standard library censor first (Best for phrases)
-    profanity.load_censor_words(custom_set)
-    first_pass = profanity.censor(text, censor_char)
-    profanity.load_censor_words(DEFAULT_PROFANITY_SET)
-    
-    # 2. Run our "Smart Pass" word by word to catch s.h.i.t / sh!t
-    # We split by whitespace to process individual tokens
-    words = first_pass.split()
+    # We split by space to handle the sentence word by word
+    words = text.split()
     final_words = []
     
     for word in words:
-        # If it's already censored by step 1 (****), skip logic
-        if set(word) == set(censor_char):
-            final_words.append(word)
-            continue
-            
-        # Normalize: "sh!t" -> "shit", "s.h.i.t" -> "shit"
-        # We strip everything that isn't a letter/number
-        normalized = re.sub(r'[^\w]', '', word)
-        
-        # Check if the normalized version is bad
-        # We use check_logic but we need to ensure we don't flag empty strings
-        is_bad = False
-        if normalized:
-             is_bad = check_logic(normalized, custom_set)
-        
-        if is_bad:
-            # Replace with censor chars matching original length
+        # Check if this specific word is dirty
+        if is_word_dirty(word, custom_set):
             final_words.append(censor_char * len(word))
         else:
             final_words.append(word)
             
-    # Reconstruct the sentence
     return " ".join(final_words)
